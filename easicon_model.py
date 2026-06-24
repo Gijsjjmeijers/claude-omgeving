@@ -497,79 +497,109 @@ def maak_onzekerheidsgrafiek(modellen, n_projecten=100, bestandsnaam="easicon_ze
     Toont hoe de zekerheid per fase toeneemt na 0–100 projecten.
 
     Twee panelen:
-      Links  — tau_n (posterior std op log-schaal): daalt naarmate meer
-               projecten worden geobserveerd. Alle fases starten op tau_0 = 0.5.
-      Rechts — 90%-intervalsbreedte in dagen (upper − lower): vertaalt tau_n
-               naar meetbare onzekerheid voor planners.
+      Links  — tau_n daalt richting 0: model leert het gemiddelde steeds beter.
+               sigma (= SIGMA_LOG) is de onvermijdelijke projectvariabiliteit —
+               die blijft altijd bestaan en wordt getoond als horizontale lijn.
+      Rechts — 90%-intervalsbreedte in dagen. De gestippelde "sigma-vloer" toont
+               de minimaal haalbare breedte: zelfs met oneindige data blijft die
+               bestaan door inherente projectvariabiliteit (sigma).
 
-    Parameters
-    ----------
-    modellen     : dict {fase_code: BayesianesFaseModel}
-    n_projecten  : int — simulatielengte
-    bestandsnaam : str — pad voor de opgeslagen afbeelding
+    De vloer per fase = exp(ware_mu) * (exp(1.645*sigma) - exp(-1.645*sigma))
+    = het interval bij tau_n=0, alleen nog bepaald door sigma.
     """
-    fig, (ax_tau, ax_breedte) = plt.subplots(1, 2, figsize=(14, 6))
+    fig, (ax_tau, ax_breedte) = plt.subplots(1, 2, figsize=(15, 6))
 
     fig.suptitle(
         f"EaSiCon — Zekerheidstoename per bouwfase ({n_projecten} projecten)\n"
-        "Links: tau_n (onzekerheid op mu, log-schaal) · "
-        "Rechts: 90%-intervalsbreedte (dagen)",
+        "Gekleurde lijn = model leert het gemiddelde  |  "
+        "Gestippeld = onvermijdelijke projectvariabiliteit (sigma-vloer)",
         fontsize=12, fontweight="bold",
     )
 
-    # Markeer n=10, 25, 50 in beide panelen
     milestones = [10, 25, 50]
 
     for i, (fase_code, model) in enumerate(modellen.items()):
-        config = FASE_INSTELLINGEN[fase_code]
-        kleur  = config["kleur"]
-        label  = f"{fase_code}: {config['naam']}"
+        config    = FASE_INSTELLINGEN[fase_code]
+        kleur     = config["kleur"]
+        ware_mu   = config["ware_mu"]
+        label     = f"{fase_code}: {config['naam']}"
 
         resultaat = voer_convergentie_experiment_uit(
-            model, config["ware_mu"], SIGMA_LOG, n_projecten, seed=42 + i
+            model, ware_mu, SIGMA_LOG, n_projecten, seed=42 + i
         )
 
-        x             = np.arange(n_projecten + 1)
-        tau           = resultaat["tau"]
-        breedte       = resultaat["upper"] - resultaat["lower"]
+        x       = np.arange(n_projecten + 1)
+        tau     = resultaat["tau"]
+        breedte = resultaat["upper"] - resultaat["lower"]
 
+        # Sigma-vloer: minimale intervalsbreedte bij tau_n = 0
+        # (alleen nog inherente projectvariabiliteit)
+        sigma_floor_breedte = (
+            np.exp(ware_mu + 1.645 * SIGMA_LOG)
+            - np.exp(ware_mu - 1.645 * SIGMA_LOG)
+        )
+
+        # --- Linkerpaneel: tau_n ---
         ax_tau.plot(x, tau, color=kleur, linewidth=2.2, label=label)
-        ax_breedte.plot(x, breedte, color=kleur, linewidth=2.2, label=label)
+        # sigma als vaste horizontale lijn (het niveau dat tau nooit onderschrijdt)
+        ax_tau.axhline(SIGMA_LOG, color="#CCCCCC", linestyle=":", linewidth=1.0)
 
-        # Annoteer eindwaarde (n=100)
+        # Annoteer eindwaarde
         ax_tau.annotate(
             f"{tau[-1]:.3f}",
             xy=(n_projecten, tau[-1]),
             fontsize=6.5, color=kleur,
             xytext=(3, 0), textcoords="offset points", va="center",
         )
+
+        # --- Rechterpaneel: intervalsbreedte ---
+        ax_breedte.plot(x, breedte, color=kleur, linewidth=2.2, label=label)
+        # Sigma-vloer als gestippelde horizontale lijn
+        ax_breedte.axhline(
+            sigma_floor_breedte, color=kleur, linestyle=":",
+            linewidth=1.2, alpha=0.55,
+        )
+        # Annoteer vloer rechts van de grafiek
         ax_breedte.annotate(
-            f"{breedte[-1]:.0f}d",
-            xy=(n_projecten, breedte[-1]),
-            fontsize=6.5, color=kleur,
+            f"vloer {fase_code}: {sigma_floor_breedte:.0f}d",
+            xy=(n_projecten, sigma_floor_breedte),
+            fontsize=6.0, color=kleur, alpha=0.75,
             xytext=(3, 0), textcoords="offset points", va="center",
         )
 
         model.reset()
 
+    # Sigma-label linkerpaneel
+    ax_tau.text(
+        1, SIGMA_LOG + 0.01,
+        f"sigma = {SIGMA_LOG} (projectvariabiliteit, daalt niet)",
+        fontsize=7, color="#999999", va="bottom",
+    )
+
     for ax in (ax_tau, ax_breedte):
         for m in milestones:
-            ax.axvline(m, color="#CCCCCC", linestyle="--", linewidth=0.9)
-            ax.text(m + 0.5, ax.get_ylim()[0] if ax.get_ylim()[0] > 0 else 0,
-                    f"n={m}", fontsize=6.5, color="#999999", va="bottom")
+            ax.axvline(m, color="#DDDDDD", linestyle="--", linewidth=0.9)
+            ax.text(m + 0.5, 0, f"n={m}", fontsize=6.5, color="#AAAAAA", va="bottom")
         ax.set_xlabel("Voltooide projecten", fontsize=10)
         ax.legend(fontsize=7.5, loc="upper right")
-        ax.grid(True, alpha=0.3, linestyle="--")
+        ax.grid(True, alpha=0.25, linestyle="--")
         ax.set_facecolor("#FAFAFA")
         ax.set_xlim(0, n_projecten)
+        ax.set_ylim(bottom=0)
 
-    ax_tau.set_title("tau_n — onzekerheid op μ (log-schaal)", fontsize=11, fontweight="bold")
-    ax_tau.set_ylabel("tau_n  (std van posterior op log-schaal)", fontsize=10)
-    ax_tau.set_ylim(bottom=0)
+    ax_tau.set_title(
+        "tau_n — leeronzekerheid op mu (log-schaal)\n"
+        "daalt naar 0 naarmate meer projecten worden geobserveerd",
+        fontsize=10, fontweight="bold",
+    )
+    ax_tau.set_ylabel("tau_n  (std posterior op log-schaal)", fontsize=10)
 
-    ax_breedte.set_title("90%-intervalsbreedte (dagen)", fontsize=11, fontweight="bold")
-    ax_breedte.set_ylabel("Upper − Lower  (dagen)", fontsize=10)
-    ax_breedte.set_ylim(bottom=0)
+    ax_breedte.set_title(
+        "90%-intervalsbreedte per fase (dagen)\n"
+        "gestippeld = sigma-vloer: minimaal haalbaar, ook met oneindig veel data",
+        fontsize=10, fontweight="bold",
+    )
+    ax_breedte.set_ylabel("Upper - Lower  (dagen)", fontsize=10)
 
     plt.tight_layout()
     plt.savefig(bestandsnaam, dpi=150, bbox_inches="tight")
