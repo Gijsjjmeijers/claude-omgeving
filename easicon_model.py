@@ -15,9 +15,10 @@ Theorie (zie thesis H6, Kim & Reinschmidt 2009, Gelman et al. 2013):
 
 Gebruik : python easicon_model.py
 Output  :
-  1. Tabel — huidige schatting per fase in dagen
+  1. Tabel — huidige schatting per fase in dagen, incl. covariaten
   2. TODO-lijst — openstaande punten na interviews
-  3. easicon_resultaten.png — convergentiegrafiek per fase (SQ5-verificatie)
+  3. easicon_resultaten.png  — convergentiegrafiek per fase (100 projecten)
+  4. easicon_zekerheid.png   — zekerheidstoename per fase (tau + intervalsbreedte)
 
 Fases (NEN 2574 + Flapper 2005):
   A   Voorbereiding
@@ -28,9 +29,14 @@ Fases (NEN 2574 + Flapper 2005):
   C3  Afbouw: Functionele Afwerking
 """
 
+import sys
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
+
+# Zorg dat de Windows-console UTF-8 uitvoert (box-tekens, β, enz.)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # ==============================================================================
 # SECTIE 1: INSTELLINGEN
@@ -329,7 +335,7 @@ def simuleer_projecten(ware_mu, sigma, n, seed=42):
     return np.exp(rng.normal(loc=ware_mu, scale=sigma, size=n))
 
 
-def voer_convergentie_experiment_uit(model, ware_mu, sigma, n_projecten=30, seed=42):
+def voer_convergentie_experiment_uit(model, ware_mu, sigma, n_projecten=100, seed=42):
     """
     Voert het convergentie-experiment uit voor één fase.
 
@@ -347,17 +353,18 @@ def voer_convergentie_experiment_uit(model, ware_mu, sigma, n_projecten=30, seed
 
     Returns
     -------
-    dict met sleutels 'verwacht', 'lower', 'upper', 'ware_duur'
+    dict met sleutels 'verwacht', 'lower', 'upper', 'tau', 'ware_duur'
     """
     model.reset()
 
-    verwacht_lijst, lower_lijst, upper_lijst = [], [], []
+    verwacht_lijst, lower_lijst, upper_lijst, tau_lijst = [], [], [], []
 
     # Schatting vóór enige observatie (= prior)
     v, l, u = model.voorspel()
     verwacht_lijst.append(v)
     lower_lijst.append(l)
     upper_lijst.append(u)
+    tau_lijst.append(model.tau_n)
 
     # Update na elk gesimuleerd project
     for duur in simuleer_projecten(ware_mu, sigma, n_projecten, seed=seed):
@@ -366,28 +373,31 @@ def voer_convergentie_experiment_uit(model, ware_mu, sigma, n_projecten=30, seed
         verwacht_lijst.append(v)
         lower_lijst.append(l)
         upper_lijst.append(u)
+        tau_lijst.append(model.tau_n)
 
     return {
         "verwacht":  np.array(verwacht_lijst),
         "lower":     np.array(lower_lijst),
         "upper":     np.array(upper_lijst),
+        "tau":       np.array(tau_lijst),
         "ware_duur": np.exp(ware_mu + sigma**2 / 2),
     }
 
 
 # ==============================================================================
-# SECTIE 4: GRAFIEK
+# SECTIE 4: GRAFIEKEN
 # ==============================================================================
 
-def maak_convergentiegrafiek(modellen, n_projecten=30, bestandsnaam="easicon_resultaten.png"):
+def maak_convergentiegrafiek(modellen, n_projecten=100, bestandsnaam="easicon_resultaten.png"):
     """
-    Maakt convergentiegrafiek: 2×3 subplots, één per fase.
+    Maakt convergentiegrafiek: 2×3 subplots, één per fase (100 projecten).
 
     Per subplot:
-      - Gekleurde lijn  : schatting van het model na elk project
-      - Gekleurd vlak   : 90% predictie-interval
-      - Zwart gestippeld: de 'ware' waarde (target voor convergentie)
-      - Grijs gestippeld: initiële prior-schatting
+      - Gekleurde lijn    : schatting van het model na elk project
+      - Gekleurd vlak     : 90% predictie-interval
+      - Zwart gestippeld  : de 'ware' waarde (target voor convergentie)
+      - Grijs gestippeld  : initiële prior-schatting
+      - Tekstvak rechts   : covariaten van de fase met beta-waarden
 
     Parameters
     ----------
@@ -395,14 +405,16 @@ def maak_convergentiegrafiek(modellen, n_projecten=30, bestandsnaam="easicon_res
     n_projecten   : int — aantal projecten in de simulatie
     bestandsnaam  : str — pad voor de opgeslagen afbeelding
     """
-    fig, assen = plt.subplots(2, 3, figsize=(15, 9))
+    fig, assen = plt.subplots(2, 3, figsize=(16, 10))
     assen = assen.flatten()
 
     fig.suptitle(
         "EaSiCon — Bayesiaans Duratie-Schattingsmodel\n"
-        "Convergentie per bouwfase (simulatie ter verificatie, SQ5)",
-        fontsize=13, fontweight="bold", y=1.02,
+        f"Convergentie per bouwfase (simulatie ter verificatie, SQ5 — {n_projecten} projecten)",
+        fontsize=13, fontweight="bold", y=1.01,
     )
+
+    milestones = [10, 25, 50]  # markeer deze projectaantallen met een streepje
 
     for i, (fase_code, model) in enumerate(modellen.items()):
         ax     = assen[i]
@@ -435,6 +447,33 @@ def maak_convergentiegrafiek(modellen, n_projecten=30, bestandsnaam="easicon_res
         ax.axhline(prior_duur, color="#888888", linestyle=":",
                    linewidth=1.2, alpha=0.8, label=f"Prior ({prior_duur:.0f}d)")
 
+        # Milestone-markers
+        for m in milestones:
+            if m <= n_projecten:
+                ax.axvline(m, color="#AAAAAA", linestyle="--", linewidth=0.8, alpha=0.6)
+                ax.text(m + 0.5, ax.get_ylim()[0] if ax.get_ylim()[0] > 0 else 1,
+                        f"n={m}", fontsize=6, color="#888888", va="bottom")
+
+        # Covariaten-tekstvak (linksboven)
+        factoren = config.get("fase_specifieke_factoren", {})
+        cov_regels = [
+            f"GFA        β={BETA_GFA:.3f}/m²",
+            f"Verdiep.   β={BETA_VERDIEPINGEN:.3f}",
+            f"Hoogte     β={BETA_HOOGTE:.3f}/m",
+            "─────────────────",
+        ]
+        for naam_f, coeff in factoren.items():
+            markering = "?" if coeff == 0.0 else " "
+            cov_regels.append(f"{naam_f:<14}{markering} β={coeff:.3f}")
+        cov_tekst = "\n".join(cov_regels)
+        ax.text(
+            0.02, 0.98, cov_tekst,
+            transform=ax.transAxes, fontsize=6.2,
+            verticalalignment="top", fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="lightyellow",
+                      edgecolor="#CCCCCC", alpha=0.85),
+        )
+
         ax.set_title(f"Fase {fase_code}: {config['naam']}", fontsize=10, fontweight="bold")
         ax.set_xlabel("Voltooide projecten", fontsize=9)
         ax.set_ylabel("Geschatte duur (dagen)", fontsize=9)
@@ -453,27 +492,129 @@ def maak_convergentiegrafiek(modellen, n_projecten=30, bestandsnaam="easicon_res
     print(f"\n  Grafiek opgeslagen: {bestandsnaam}")
 
 
+def maak_onzekerheidsgrafiek(modellen, n_projecten=100, bestandsnaam="easicon_zekerheid.png"):
+    """
+    Toont hoe de zekerheid per fase toeneemt na 0–100 projecten.
+
+    Twee panelen:
+      Links  — tau_n (posterior std op log-schaal): daalt naarmate meer
+               projecten worden geobserveerd. Alle fases starten op tau_0 = 0.5.
+      Rechts — 90%-intervalsbreedte in dagen (upper − lower): vertaalt tau_n
+               naar meetbare onzekerheid voor planners.
+
+    Parameters
+    ----------
+    modellen     : dict {fase_code: BayesianesFaseModel}
+    n_projecten  : int — simulatielengte
+    bestandsnaam : str — pad voor de opgeslagen afbeelding
+    """
+    fig, (ax_tau, ax_breedte) = plt.subplots(1, 2, figsize=(14, 6))
+
+    fig.suptitle(
+        f"EaSiCon — Zekerheidstoename per bouwfase ({n_projecten} projecten)\n"
+        "Links: tau_n (onzekerheid op mu, log-schaal) · "
+        "Rechts: 90%-intervalsbreedte (dagen)",
+        fontsize=12, fontweight="bold",
+    )
+
+    # Markeer n=10, 25, 50 in beide panelen
+    milestones = [10, 25, 50]
+
+    for i, (fase_code, model) in enumerate(modellen.items()):
+        config = FASE_INSTELLINGEN[fase_code]
+        kleur  = config["kleur"]
+        label  = f"{fase_code}: {config['naam']}"
+
+        resultaat = voer_convergentie_experiment_uit(
+            model, config["ware_mu"], SIGMA_LOG, n_projecten, seed=42 + i
+        )
+
+        x             = np.arange(n_projecten + 1)
+        tau           = resultaat["tau"]
+        breedte       = resultaat["upper"] - resultaat["lower"]
+
+        ax_tau.plot(x, tau, color=kleur, linewidth=2.2, label=label)
+        ax_breedte.plot(x, breedte, color=kleur, linewidth=2.2, label=label)
+
+        # Annoteer eindwaarde (n=100)
+        ax_tau.annotate(
+            f"{tau[-1]:.3f}",
+            xy=(n_projecten, tau[-1]),
+            fontsize=6.5, color=kleur,
+            xytext=(3, 0), textcoords="offset points", va="center",
+        )
+        ax_breedte.annotate(
+            f"{breedte[-1]:.0f}d",
+            xy=(n_projecten, breedte[-1]),
+            fontsize=6.5, color=kleur,
+            xytext=(3, 0), textcoords="offset points", va="center",
+        )
+
+        model.reset()
+
+    for ax in (ax_tau, ax_breedte):
+        for m in milestones:
+            ax.axvline(m, color="#CCCCCC", linestyle="--", linewidth=0.9)
+            ax.text(m + 0.5, ax.get_ylim()[0] if ax.get_ylim()[0] > 0 else 0,
+                    f"n={m}", fontsize=6.5, color="#999999", va="bottom")
+        ax.set_xlabel("Voltooide projecten", fontsize=10)
+        ax.legend(fontsize=7.5, loc="upper right")
+        ax.grid(True, alpha=0.3, linestyle="--")
+        ax.set_facecolor("#FAFAFA")
+        ax.set_xlim(0, n_projecten)
+
+    ax_tau.set_title("tau_n — onzekerheid op μ (log-schaal)", fontsize=11, fontweight="bold")
+    ax_tau.set_ylabel("tau_n  (std van posterior op log-schaal)", fontsize=10)
+    ax_tau.set_ylim(bottom=0)
+
+    ax_breedte.set_title("90%-intervalsbreedte (dagen)", fontsize=11, fontweight="bold")
+    ax_breedte.set_ylabel("Upper − Lower  (dagen)", fontsize=10)
+    ax_breedte.set_ylim(bottom=0)
+
+    plt.tight_layout()
+    plt.savefig(bestandsnaam, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Grafiek opgeslagen: {bestandsnaam}")
+
+
 # ==============================================================================
 # SECTIE 5: TEKSTOUTPUT
 # ==============================================================================
 
 def print_schattingstabel(modellen):
-    """Print overzichtstabel met huidige schattingen per fase (prior-stand)."""
-    breedte = 74
+    """Print overzichtstabel met huidige schattingen + covariaten per fase."""
+    breedte = 82
     print("\n" + "=" * breedte)
     print("  EaSiCon — Huidige faseschattingen  (prior, vóór projectdata)")
     print("=" * breedte)
-    print(f"  {'Fase':<5} {'Naam':<38} {'Verwacht':>9} {'90%-interval':>18}")
+    print(f"  {'Fase':<5} {'Naam':<36} {'Verwacht':>9} {'90%-interval':>20}")
     print("-" * breedte)
 
     for fase_code, model in modellen.items():
-        naam = FASE_INSTELLINGEN[fase_code]["naam"]
+        config = FASE_INSTELLINGEN[fase_code]
+        naam   = config["naam"]
         v, l, u = model.voorspel()
-        print(f"  {fase_code:<5} {naam:<38} {v:>7.1f}d  [{l:>5.1f} – {u:>6.1f}d]")
+        print(f"  {fase_code:<5} {naam:<36} {v:>7.1f}d  [{l:>5.1f} – {u:>6.1f}d]")
+
+        # Algemene covariaten
+        print(f"  {'':>5}  ├─ Algemeen :  "
+              f"GFA β={BETA_GFA:.3f}/m²  |  "
+              f"Verdiep. β={BETA_VERDIEPINGEN:.2f}  |  "
+              f"Hoogte β={BETA_HOOGTE:.3f}/m")
+
+        # Fase-specifieke covariaten
+        factoren = config.get("fase_specifieke_factoren", {})
+        items    = list(factoren.items())
+        for j, (naam_f, coeff) in enumerate(items):
+            prefix  = "  └─" if j == len(items) - 1 else "  ├─"
+            todo    = "  ← !! TODO" if coeff == 0.0 else ""
+            print(f"  {'':>5} {prefix} {naam_f:<22}  β = {coeff:+.4f}{todo}")
+        print()
 
     print("-" * breedte)
     print("  * Alle waarden zijn PLACEHOLDERS op basis van literatuurschattingen.")
     print("    Vervang mu_0 en tau_0 per fase na expert-interviews (zie TODO's).")
+    print("    β = 0.0000 betekent: coëfficiënt nog niet ingesteld (TODO).")
     print("=" * breedte)
 
 
@@ -502,7 +643,7 @@ def print_todo_lijst():
         },
         {
             "nr": 3,
-            "wat": "Fase-specifieke covariaten invullen (3 per fase, nu alle 0.0)",
+            "wat": "Fase-specifieke covariaten invullen (3 per fase, nu alle β=0.0)",
             "hoe": (
                 'Stel per fase: "Welke 3 projectkenmerken bepalen het meest\n'
                 "         hoe lang fase X duurt?\" Stel coëfficiënten in op basis\n"
@@ -537,10 +678,10 @@ def print_todo_lijst():
                 "Voer uit nadat echte priors zijn ingesteld:\n"
                 "         (a) Convergentie: daalt tau_n na elk project?\n"
                 "         (b) Correctie: corrigeert model een bewust foute prior?\n"
-                "         (c) Stabilisatie: wordt schatting stabieler na ~20 projecten?\n"
-                "         -> Grafiek easicon_resultaten.png toont dit al voor placeholders."
+                "         (c) Stabilisatie: wordt schatting stabieler na ~20–50 projecten?\n"
+                "         -> easicon_resultaten.png + easicon_zekerheid.png tonen dit."
             ),
-            "locatie": "voer_convergentie_experiment_uit()  /  easicon_resultaten.png",
+            "locatie": "voer_convergentie_experiment_uit()  /  beide PNG-bestanden",
         },
         {
             "nr": 7,
@@ -574,6 +715,8 @@ def print_todo_lijst():
 # ==============================================================================
 
 def main():
+    N_PROJECTEN = 100  # simulatielengte voor beide grafieken
+
     print("\nEaSiCon Bayesiaans Duratie-Schattingsmodel")
     print("Gijs Meijers (4957822) | TU Delft x Haskoning | 2026")
 
@@ -589,17 +732,22 @@ def main():
         for code, cfg in FASE_INSTELLINGEN.items()
     }
 
-    # 1. Tabel met huidige schattingen (prior-stand)
+    # 1. Tabel met huidige schattingen + covariaten (prior-stand)
     print_schattingstabel(modellen)
 
     # 2. Openstaande TODO's
     print_todo_lijst()
 
-    # 3. Convergentiegrafiek (simulatie ter verificatie)
-    print("  Grafiek wordt aangemaakt...")
-    maak_convergentiegrafiek(modellen, n_projecten=30)
+    # 3. Convergentiegrafiek met covariaat-annotaties (100 projecten)
+    print("  Grafieken worden aangemaakt...")
+    maak_convergentiegrafiek(modellen, n_projecten=N_PROJECTEN)
 
-    print("Klaar. Controleer easicon_resultaten.png voor de convergentieplots.")
+    # 4. Zekerheidstoename-grafiek (tau + intervalsbreedte over 100 projecten)
+    maak_onzekerheidsgrafiek(modellen, n_projecten=N_PROJECTEN)
+
+    print("\nKlaar.")
+    print("  easicon_resultaten.png — convergentie per fase (incl. covariaten)")
+    print("  easicon_zekerheid.png  — zekerheidstoename over 100 projecten")
     print()
 
 
