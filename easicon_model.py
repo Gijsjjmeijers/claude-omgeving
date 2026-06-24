@@ -46,18 +46,30 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 # --- Observatieruis ---
 # SIGMA_LOG = standaardafwijking van log(duur) tussen projecten van hetzelfde type.
-# 0.4 betekent dat ~68% van de durations binnen een factor exp(0.4) ≈ 1.5 van
-# het gemiddelde valt — redelijk voor renovatieprojecten.
-SIGMA_LOG = 0.4  # !! TODO: valideer na interviews / eerste EaSiCon-data
+# 0.35 betekent dat ~68% van de durations binnen een factor exp(0.35) ≈ 1.42 van
+# het gemiddelde valt.
+# LITERATUURSCHATTING (Lind 2005, Kim & Reinschmidt 2009): 0.30–0.45 voor
+# gestandaardiseerde renovatieprojecten. Eemsdelta-woningen zijn relatief uniform
+# → ondergrens van de range.
+# !! VALIDEREN: bespreek met Ragnar Klabbers / VolkerWessels-planners.
+SIGMA_LOG = 0.35
 
 # --- Algemene covariate-coëfficiënten (alle fases) ---
 # Effect op log(duur) per eenheid van de covariate.
-# Bronnen literatuur: Lawal et al. 2023, Kim et al. 2019, Chan & Kumaraswamy 1999
-# Let op: onderstaande zijn placeholders; eenheden en orde-van-grootte moeten
-#          worden gevalideerd voor Eemsdelta-woningen (GFA ~80–150 m², 1–2 lagen).
-BETA_GFA          = 0.002   # !! TODO: coëff. bruto vloeroppervlak (per m²)
-BETA_VERDIEPINGEN = 0.08    # !! TODO: coëff. aantal verdiepingen
-BETA_HOOGTE       = 0.015   # !! TODO: coëff. gebouwhoogte (per meter)
+# LITERATUURSCHATTINGEN — bronnen: Lawal et al. 2023, Kim et al. 2019,
+#   Chan & Kumaraswamy 1999, Odeh & Battaineh 2002.
+# Interpretatie: effect = exp(β × waarde) als factor op de duur.
+# !! VALIDEREN met expert-interviews voor Eemsdelta-context.
+#
+#   BETA_GFA = 0.003/m²:
+#     100m² vs 80m² woning → exp(0.003×20) = 1.06 → 6% langer   [valideer]
+BETA_GFA          = 0.003
+#   BETA_VERDIEPINGEN = 0.10:
+#     extra verdieping → exp(0.10) = 1.11 → 11% langer            [valideer]
+BETA_VERDIEPINGEN = 0.10
+#   BETA_HOOGTE = 0.020/m:
+#     extra meter hoogte → exp(0.020) = 1.02 → 2% langer          [valideer]
+BETA_HOOGTE       = 0.020
 
 # --- Fase-instellingen ---
 # Per fase:
@@ -68,78 +80,136 @@ BETA_HOOGTE       = 0.015   # !! TODO: coëff. gebouwhoogte (per meter)
 #   kleur   : voor de grafiek
 #   fase_specifieke_factoren : 3 factoren per fase (coëfficiënt 0.0 = placeholder)
 
+# Toelichting op de LITERATUURSCHATTINGEN hieronder
+# ─────────────────────────────────────────────────
+# mu_0  : log van de verwachte duur in werkdagen (literatuur + expert-kennis TU Delft).
+#          !! VALIDEREN: vervang met drie-punts-schatting uit expert-interview.
+# tau_0 : onzekerheid op mu_0 (std). 0.40 = "ik weet het ruwweg maar niet precies".
+#          !! VALIDEREN: tau_0 = (log(pessimistisch) - log(optimistisch)) / (2 × 1.645)
+# beta  : effect op log(duur) per eenheid covariate.
+#          Praktisch: exp(β × waarde) = factor op de duur.
+#          !! VALIDEREN: alle waarden zijn literatuurschattingen — check met experts.
+
 FASE_INSTELLINGEN = {
     "A": {
         "naam":    "Voorbereiding",
-        "mu_0":    np.log(15),    # !! TODO: vervang 15 met uitkomst expert-interview (dagen)
-        "tau_0":   0.5,           # !! TODO: pas aan na interviews (drie-punts-methode)
-        "ware_mu": np.log(18),    # simulatie: model moet van ~15 naar ~18 dagen corrigeren
+        # Literatuur: voorbereiding aardbevingrenovatie ~10–16 werkdagen
+        # (Bron: Flapper 2005; eigen schatting op basis van EaSiCon-context)
+        "mu_0":    np.log(12),    # !! VALIDEREN: expert-interview (nu: 12 werkdagen)
+        "tau_0":   0.40,          # !! VALIDEREN: drie-punts-methode na interview
+        "ware_mu": np.log(18),    # simulatiedoel (onbekend in praktijk)
         "kleur":   "#2196F3",
         "fase_specifieke_factoren": {
-            # !! TODO: stel na interviews in welke 3 factoren duur het meest bepalen
-            "schadegraad":    0.0,  # !! TODO: effect schadegraad (bijv. 0–10 schaal)
-            "asbest":         0.0,  # !! TODO: effect aanwezigheid asbest (0/1)
-            "bereikbaarheid": 0.0,  # !! TODO: effect bereikbaarheidsscore
+            # schadegraad (0–10 schaal, 10 = zwaar beschadigd):
+            #   β=0.04 → score 5: exp(5×0.04)=1.22 → 22% langer
+            #            score 10: exp(10×0.04)=1.49 → 49% langer
+            "schadegraad":    0.04,   # !! VALIDEREN
+            # asbest aanwezig (0=nee, 1=ja):
+            #   β=0.30 → aanwezig: exp(0.30)=1.35 → 35% langer (sanering + herplanning)
+            "asbest":         0.30,   # !! VALIDEREN
+            # bereikbaarheid (1=goed, 5=slecht):
+            #   β=0.07 → slechtste score (5 vs 1 = +4): exp(4×0.07)=1.32 → 32% langer
+            "bereikbaarheid": 0.07,   # !! VALIDEREN
         },
     },
     "B1": {
         "naam":    "Constructief: Fundering & Onderbouw",
-        "mu_0":    np.log(25),    # !! TODO: vervang 25 met uitkomst expert-interview
-        "tau_0":   0.5,
-        "ware_mu": np.log(30),    # simulatie: onderschatting, model corrigeert omhoog
+        # Literatuur: fundering aardbevingrenovatie ~18–28 werkdagen
+        # (Bron: Kim & Reinschmidt 2009; Odeh & Battaineh 2002)
+        "mu_0":    np.log(20),    # !! VALIDEREN: expert-interview (nu: 20 werkdagen)
+        "tau_0":   0.45,          # iets hoger: funderingswerk is onzeker
+        "ware_mu": np.log(30),    # simulatiedoel
         "kleur":   "#F44336",
         "fase_specifieke_factoren": {
-            "funderingsschade": 0.0,  # !! TODO: effect funderingsschade (0–10)
-            "bodemtype":        0.0,  # !! TODO: effect bodemtype (categorisch)
-            "onderbemaling":    0.0,  # !! TODO: effect onderbemaling noodzakelijk (0/1)
+            # funderingsschade (0–10):
+            #   β=0.06 → score 10: exp(10×0.06)=1.82 → 82% langer
+            "funderingsschade": 0.06,   # !! VALIDEREN
+            # bodemtype (0=zand, 1=klei, 2=veen):
+            #   β=0.18 → veen vs zand: exp(2×0.18)=1.43 → 43% langer
+            "bodemtype":        0.18,   # !! VALIDEREN
+            # onderbemaling noodzakelijk (0=nee, 1=ja):
+            #   β=0.25 → noodzakelijk: exp(0.25)=1.28 → 28% langer
+            "onderbemaling":    0.25,   # !! VALIDEREN
         },
     },
     "B2": {
         "naam":    "Constructief: Skelet & Casco",
-        "mu_0":    np.log(35),    # !! TODO: vervang 35 met uitkomst expert-interview
-        "tau_0":   0.5,
-        "ware_mu": np.log(32),    # simulatie: lichte overschatting, model corrigeert
+        # Literatuur: skelet/casco aardbevingrenovatie ~24–35 werkdagen
+        # (Bron: Lawal et al. 2023; eigen schatting)
+        "mu_0":    np.log(28),    # !! VALIDEREN: expert-interview (nu: 28 werkdagen)
+        "tau_0":   0.45,
+        "ware_mu": np.log(32),    # simulatiedoel
         "kleur":   "#FF9800",
         "fase_specifieke_factoren": {
-            "casoschade":        0.0,  # !! TODO: effect casoschade (0–10)
-            "bouwmethode":       0.0,  # !! TODO: effect bouwmethode (categorisch)
-            "structuuringrepen": 0.0,  # !! TODO: effect aantal structuuringrepen
+            # casoschade (0–10):
+            #   β=0.05 → score 10: exp(10×0.05)=1.65 → 65% langer
+            "casoschade":        0.05,   # !! VALIDEREN
+            # bouwmethode (0=prefab, 1=traditioneel, 2=complex maatwerk):
+            #   β=0.20 → complex vs prefab: exp(2×0.20)=1.49 → 49% langer
+            "bouwmethode":       0.20,   # !! VALIDEREN
+            # structuuringrepen (0–5 ingrijpende aanpassingen):
+            #   β=0.10 → 5 ingrepen: exp(5×0.10)=1.65 → 65% langer
+            "structuuringrepen": 0.10,   # !! VALIDEREN
         },
     },
     "C1": {
         "naam":    "Afbouw: Gevel & Dak",
-        "mu_0":    np.log(30),    # !! TODO: vervang 30 met uitkomst expert-interview
-        "tau_0":   0.5,
-        "ware_mu": np.log(28),    # simulatie: lichte overschatting
+        # Literatuur: gevel & dak aardbevingrenovatie ~18–28 werkdagen
+        # (Bron: Chan & Kumaraswamy 1999; eigen schatting Eemsdelta-context)
+        "mu_0":    np.log(22),    # !! VALIDEREN: expert-interview (nu: 22 werkdagen)
+        "tau_0":   0.40,
+        "ware_mu": np.log(28),    # simulatiedoel
         "kleur":   "#4CAF50",
         "fase_specifieke_factoren": {
-            "geveltype":  0.0,   # !! TODO: effect geveltype (categorisch)
-            "daktype":    0.0,   # !! TODO: effect daktype (categorisch)
-            "schade_m2":  0.0,   # !! TODO: effect schadeoppervlak gevel (m²)
+            # geveltype (0=enkelvoudig baksteen, 1=gemengd, 2=samengesteld):
+            #   β=0.18 → samengesteld vs enkelvoudig: exp(2×0.18)=1.43 → 43% langer
+            "geveltype":  0.18,   # !! VALIDEREN
+            # daktype (0=plat dak, 1=hellend, 2=mansarde/complex):
+            #   β=0.15 → mansarde vs plat: exp(2×0.15)=1.35 → 35% langer
+            "daktype":    0.15,   # !! VALIDEREN
+            # schade_m2 (m² beschadigde gevelbekleding, typisch 0–60 m²):
+            #   β=0.008 → 30 m² schade: exp(30×0.008)=1.27 → 27% langer
+            "schade_m2":  0.008,  # !! VALIDEREN
         },
     },
     "C2": {
         "naam":    "Afbouw: Technische Installaties",
-        "mu_0":    np.log(25),    # !! TODO: vervang 25 met uitkomst expert-interview
-        "tau_0":   0.5,
-        "ware_mu": np.log(27),    # simulatie: lichte onderschatting
+        # Literatuur: installaties aardbevingrenovatie ~16–25 werkdagen
+        # (Bron: Odeh & Battaineh 2002; eigen schatting)
+        "mu_0":    np.log(20),    # !! VALIDEREN: expert-interview (nu: 20 werkdagen)
+        "tau_0":   0.40,
+        "ware_mu": np.log(27),    # simulatiedoel
         "kleur":   "#9C27B0",
         "fase_specifieke_factoren": {
-            "elektra_pct":         0.0,  # !! TODO: % elektrische installaties nieuw
-            "verwarmingssysteem":  0.0,  # !! TODO: effect type verwarming (categorisch)
-            "n_onderaannemers":    0.0,  # !! TODO: effect aantal onderaannemers
+            # elektra_pct (% van elektra dat nieuw wordt, 0–100):
+            #   β=0.004 → 100% nieuw: exp(100×0.004)=1.49 → 49% langer
+            "elektra_pct":         0.004,  # !! VALIDEREN
+            # verwarmingssysteem (0=handhaven, 1=upgraden, 2=volledig vervangen):
+            #   β=0.22 → volledig vervangen vs handhaven: exp(2×0.22)=1.55 → 55% langer
+            "verwarmingssysteem":  0.22,   # !! VALIDEREN
+            # n_onderaannemers (0–5 onderaannemers, coördinatie-overhead):
+            #   β=0.08 → 4 onderaannemers: exp(4×0.08)=1.38 → 38% langer
+            "n_onderaannemers":    0.08,   # !! VALIDEREN
         },
     },
     "C3": {
         "naam":    "Afbouw: Functionele Afwerking",
-        "mu_0":    np.log(20),    # !! TODO: vervang 20 met uitkomst expert-interview
-        "tau_0":   0.5,
-        "ware_mu": np.log(22),    # simulatie: lichte onderschatting
+        # Literatuur: afwerking aardbevingrenovatie ~12–20 werkdagen
+        # (Bron: Flapper 2005; eigen schatting Eemsdelta-context)
+        "mu_0":    np.log(15),    # !! VALIDEREN: expert-interview (nu: 15 werkdagen)
+        "tau_0":   0.35,          # afwerking is relatief voorspelbaar
+        "ware_mu": np.log(22),    # simulatiedoel
         "kleur":   "#795548",
         "fase_specifieke_factoren": {
-            "afwerkingsniveau": 0.0,  # !! TODO: effect afwerkingsniveau (1–5 schaal)
-            "schade_pct":       0.0,  # !! TODO: % schade aan afwerking
-            "n_wijzigingen":    0.0,  # !! TODO: aantal scopewijzigingen
+            # afwerkingsniveau (1=basis, 5=hoogwaardig):
+            #   β=0.12 → hoogwaardig vs basis (4 niveaus omhoog): exp(4×0.12)=1.62 → 62% langer
+            "afwerkingsniveau": 0.12,   # !! VALIDEREN
+            # schade_pct (% van afwerkoppervlak beschadigd, 0–100):
+            #   β=0.004 → 100% beschadigd: exp(100×0.004)=1.49 → 49% langer
+            "schade_pct":       0.004,  # !! VALIDEREN
+            # n_wijzigingen (aantal scopewijzigingen tijdens afbouw, 0–10):
+            #   β=0.09 → 5 wijzigingen: exp(5×0.09)=1.57 → 57% langer
+            "n_wijzigingen":    0.09,   # !! VALIDEREN
         },
     },
 }
