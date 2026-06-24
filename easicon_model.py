@@ -677,6 +677,100 @@ def maak_onzekerheidsgrafiek(modellen, n_projecten=100, bestandsnaam="easicon_ze
     print(f"  Grafiek opgeslagen: {bestandsnaam}")
 
 
+# Scenario's voor de vergelijkingsgrafiek
+# R² = deel van de log-variantie dat door covariaten wordt verklaard.
+# sigma_residueel = sigma_totaal * sqrt(1 - R²)
+SIGMA_SCENARIOS = {
+    "Zonder covariaten (huidig)\nsigma=0.35, R²=0":        0.35,
+    "Matige covariaten\nsigma=0.25, R²=0.50":              0.25,
+    "Goede covariaten\nsigma=0.19, R²=0.70":               0.19,
+}
+SCENARIO_STIJLEN = [
+    {"linestyle": "-",  "linewidth": 2.5, "alpha": 1.00},
+    {"linestyle": "--", "linewidth": 2.0, "alpha": 0.85},
+    {"linestyle": ":",  "linewidth": 2.2, "alpha": 0.85},
+]
+
+
+def maak_scenario_vergelijking(modellen, n_projecten=100,
+                                bestandsnaam="easicon_scenarios.png"):
+    """
+    Laat zien hoeveel enger het 90%-interval wordt als covariaten goed gekalibreerd zijn.
+
+    Per fase drie lijnen (sigma-scenario's):
+      1. Zonder covariaten — sigma = 0.35  (huidige situatie, R²=0)
+      2. Matige covariaten — sigma = 0.25  (50% variantie verklaard)
+      3. Goede covariaten  — sigma = 0.19  (70% variantie verklaard)
+
+    De sigma-vloer (horizontale stippellijn, zelfde kleur) toont de ondergrens
+    per scenario: het interval dat resteert als het model het gemiddelde perfect kent.
+
+    Interpretatie voor de thesis:
+      - Afstand tussen lijn en vloer = leeronzekerheid (daalt na ~30 projecten)
+      - Hoogte van de vloer = residuele variabiliteit (daalt alleen met betere covariaten)
+    """
+    fig, assen = plt.subplots(2, 3, figsize=(16, 10))
+    assen = assen.flatten()
+
+    fig.suptitle(
+        "EaSiCon — Wat als covariaten wél gekalibreerd zijn?\n"
+        "90%-intervalsbreedte per fase · drie covariatescenario's · "
+        f"{n_projecten} projecten",
+        fontsize=13, fontweight="bold", y=1.01,
+    )
+
+    scenario_namen  = list(SIGMA_SCENARIOS.keys())
+    scenario_sigmas = list(SIGMA_SCENARIOS.values())
+
+    for i, (fase_code, model) in enumerate(modellen.items()):
+        ax      = assen[i]
+        config  = FASE_INSTELLINGEN[fase_code]
+        kleur   = config["kleur"]
+        ware_mu = config["ware_mu"]
+
+        for j, (sigma_scen, stijl) in enumerate(zip(scenario_sigmas, SCENARIO_STIJLEN)):
+            # Tijdelijk model met scenario-sigma; zelfde prior als het basismodel
+            model_scen = BayesianesFaseModel(
+                naam=fase_code,
+                mu_0=model.mu_0,
+                tau_0=model.tau_0,
+                sigma=sigma_scen,
+                fase_config=model.fase_config,
+            )
+            resultaat = voer_convergentie_experiment_uit(
+                model_scen, ware_mu, sigma_scen, n_projecten, seed=42 + i
+            )
+
+            x       = np.arange(n_projecten + 1)
+            breedte = resultaat["upper"] - resultaat["lower"]
+
+            ax.plot(x, breedte, color=kleur, label=scenario_namen[j], **stijl)
+
+            # Sigma-vloer (minimale breedte bij tau_n = 0)
+            vloer = (np.exp(ware_mu + 1.645 * sigma_scen)
+                     - np.exp(ware_mu - 1.645 * sigma_scen))
+            ax.axhline(vloer, color=kleur, linestyle=stijl["linestyle"],
+                       linewidth=0.9, alpha=0.35)
+            # Label vloer aan rechterkant
+            ax.text(n_projecten + 0.5, vloer,
+                    f"{vloer:.0f}d", fontsize=6, color=kleur,
+                    alpha=0.7, va="center")
+
+        ax.set_title(f"Fase {fase_code}: {config['naam']}", fontsize=10, fontweight="bold")
+        ax.set_xlabel("Voltooide projecten", fontsize=9)
+        ax.set_ylabel("90%-intervalsbreedte (dagen)", fontsize=9)
+        ax.legend(fontsize=7, loc="upper right")
+        ax.grid(True, alpha=0.25, linestyle="--")
+        ax.set_facecolor("#FAFAFA")
+        ax.set_xlim(0, n_projecten)
+        ax.set_ylim(bottom=0)
+
+    plt.tight_layout()
+    plt.savefig(bestandsnaam, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Grafiek opgeslagen: {bestandsnaam}")
+
+
 # ==============================================================================
 # SECTIE 5: TEKSTOUTPUT
 # ==============================================================================
@@ -845,9 +939,13 @@ def main():
     # 4. Zekerheidstoename-grafiek (tau + intervalsbreedte over 100 projecten)
     maak_onzekerheidsgrafiek(modellen, n_projecten=N_PROJECTEN)
 
+    # 5. Scenario-vergelijking: effect van betere covariaten op het interval
+    maak_scenario_vergelijking(modellen, n_projecten=N_PROJECTEN)
+
     print("\nKlaar.")
-    print("  easicon_resultaten.png — convergentie per fase (incl. covariaten)")
-    print("  easicon_zekerheid.png  — zekerheidstoename over 100 projecten")
+    print("  easicon_resultaten.png  — convergentie per fase (incl. covariaten)")
+    print("  easicon_zekerheid.png   — zekerheidstoename over 100 projecten")
+    print("  easicon_scenarios.png   — effect van betere covariaten op het interval")
     print()
 
 
