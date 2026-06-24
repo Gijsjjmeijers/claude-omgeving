@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git pull",
+            "shell": "powershell",
+            "statusMessage": "Pulling latest changes..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if (-not [string]::IsNullOrEmpty((git status --porcelain))) { git add .; git commit -m 'auto-save'; git push }",
+            "shell": "powershell",
+            "statusMessage": "Auto-saving changes..."
+          }
+        ]
+      }
+    ]
+  }
+}
