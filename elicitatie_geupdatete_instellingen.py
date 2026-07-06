@@ -10,15 +10,15 @@ import numpy as np
 GEUPDATETE_FASE_WAARDEN = {
     "A": {
         "n_scenarios": 5,
-        "mu_0_nieuw": np.log(1.0168),  # was 12.0d
-        "sigma_nieuw": 0.1455,  # was 0.35
+        "mu_0_nieuw": np.log(1.0914),  # was 12.0d
+        "sigma_nieuw": 0.1472,  # was 0.35
         "factoren": {
-            "GFA": {"mean": 0.03803, "sd": 0.10320},
-            "verdiepingen": {"mean": -0.11280, "sd": 0.60394},
-            "hoogte": {"mean": -0.05353, "sd": 1.30524},
-            "schadegraad": {"mean": -0.07906, "sd": 0.61171},
-            "asbest": {"mean": -0.02384, "sd": 1.12200},
-            "bereikbaarheid": {"mean": 0.06480, "sd": 0.79447},
+            "GFA": {"mean": -0.06057, "sd": 0.08040},
+            "verdiepingen": {"mean": 0.21685, "sd": 0.90341},
+            "hoogte": {"mean": 0.13318, "sd": 1.24734},
+            "schadegraad": {"mean": 0.38313, "sd": 0.49391},
+            "asbest": {"mean": -0.08368, "sd": 1.09738},
+            "bereikbaarheid": {"mean": 0.07130, "sd": 0.80577},
         },
     },
     "B1": {
@@ -49,15 +49,15 @@ GEUPDATETE_FASE_WAARDEN = {
     },
     "C1": {
         "n_scenarios": 3,
-        "mu_0_nieuw": np.log(1.1150),  # was 22.0d
-        "sigma_nieuw": 0.2104,  # was 0.35
+        "mu_0_nieuw": np.log(19.6132),  # was 22.0d
+        "sigma_nieuw": 0.2565,  # was 0.35
         "factoren": {
-            "GFA": {"mean": -0.01002, "sd": 0.04840},
-            "verdiepingen": {"mean": 0.10884, "sd": 2.07896},
-            "hoogte": {"mean": 0.65302, "sd": 0.85085},
-            "geveltype": {"mean": 0.00000, "sd": 2.10354},
-            "daktype": {"mean": 0.00000, "sd": 2.10354},
-            "schade_m2": {"mean": 0.00000, "sd": 2.10354},
+            "GFA": {"mean": -0.02848, "sd": 0.06155},
+            "verdiepingen": {"mean": 0.00000, "sd": 2.56496},
+            "hoogte": {"mean": 0.00000, "sd": 2.56496},
+            "geveltype": {"mean": 0.00000, "sd": 2.56496},
+            "daktype": {"mean": 0.00000, "sd": 2.56496},
+            "schade_m2": {"mean": 0.00000, "sd": 2.56496},
         },
     },
     "C2": {

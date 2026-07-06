@@ -69,7 +69,10 @@ Kolommen (vaste namen, hoofdlettergevoelig):
     pessimistisch        : pessimistische schatting in werkdagen
     <factornaam>...      : één kolom per covariate-naam uit FASE_INSTELLINGEN
                            (bv. GFA, verdiepingen, hoogte, schadegraad, asbest, ...)
-                           Lege cellen worden als 0 (= referentiewaarde) gelezen.
+                           Waarden zijn RUWE waarden (GFA in m², schadegraad 0-10);
+                           centrering rond de referentiewoning gebeurt automatisch
+                           in BayesiaansFaseModel. Lege cellen betekenen "zoals de
+                           referentiewoning" (= de referentiewaarde).
 
 Zie `voorbeeld_elicitatie.csv` voor een compleet voorbeeld.
 
@@ -92,11 +95,11 @@ from collections import defaultdict
 
 import numpy as np
 
-from estimation_module import PhaseDurationModel, threepoint_to_lognormal
+from estimation_module import threepoint_to_lognormal
 from easicon_model_v2 import (
     FASE_INSTELLINGEN, ALGEMENE_COVARIATEN, ALGEMENE_PRIOR_MEAN,
     ALGEMENE_PRIOR_SD, SIGMA_LOG_PRIOR, SIGMA_CONFIDENCE, VLAKKE_PRIOR,
-    BayesianesFaseModel,
+    BayesiaansFaseModel,
 )
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -116,7 +119,9 @@ def lees_scenarios(pad_csv: str) -> dict[str, list[dict]]:
         "opt"         : float
         "ml"          : float
         "pess"        : float
-        "kenmerken"   : dict {factornaam: waarde}, ontbrekende/lege cellen = 0.0
+        "kenmerken"   : dict {factornaam: ruwe waarde}; ontbrekende/lege cellen
+                        worden WEGGELATEN, zodat het model er de referentie-
+                        waarde voor invult (= "zoals de referentiewoning")
 
     Returns
     -------
@@ -152,7 +157,8 @@ def lees_scenarios(pad_csv: str) -> dict[str, list[dict]]:
             kenmerken = {}
             for kol in factor_kolommen:
                 waarde = (rij.get(kol) or "").strip()
-                kenmerken[kol] = float(waarde) if waarde else 0.0
+                if waarde:
+                    kenmerken[kol] = float(waarde)
 
             scenarios_per_fase[fase].append({
                 "respondent": rij.get("respondent", "").strip(),
@@ -163,41 +169,41 @@ def lees_scenarios(pad_csv: str) -> dict[str, list[dict]]:
     return scenarios_per_fase
 
 
-def bouw_fase_model(fase_code: str) -> PhaseDurationModel:
+def bouw_fase_model(fase_code: str) -> BayesiaansFaseModel:
     """
-    Bouwt het startmodel voor één fase door BayesianesFaseModel te hergebruiken
+    Bouwt het startmodel voor één fase door BayesiaansFaseModel te hergebruiken
     (uit easicon_model_v2.py), zodat deze verwerker ALTIJD hetzelfde startpunt
-    gebruikt als het hoofdmodel — inclusief de VLAKKE_PRIOR-schakelaar. Staat
-    VLAKKE_PRIOR op True, dan starten de scenario's dus ook hier vanaf m=0 met
-    brede onzekerheid, in plaats van vanaf de literatuurwaarden.
+    gebruikt als het hoofdmodel — inclusief de VLAKKE_PRIOR-schakelaar én de
+    centrering rond de referentiewoning. Staat VLAKKE_PRIOR op True, dan
+    starten de scenario's dus ook hier vanaf m=0 met brede onzekerheid, in
+    plaats van vanaf de literatuurwaarden.
     Dit is het model dat de scenario-observaties gaat "absorberen".
     """
-    wrapper = BayesianesFaseModel(fase_code, FASE_INSTELLINGEN[fase_code])
-    return wrapper._model, wrapper.covariate_namen
+    return BayesiaansFaseModel(fase_code, FASE_INSTELLINGEN[fase_code])
 
 
-def verwerk_scenario(model: PhaseDurationModel, covariate_namen: list[str],
-                     scenario: dict) -> None:
+def verwerk_scenario(model: BayesiaansFaseModel, scenario: dict) -> None:
     """
-    Zet één scenario-antwoord om in een (covariate_vector, duur)-observatie
-    en voedt die aan model.update(), exact zoals een voltooid project.
+    Zet één scenario-antwoord om in een (kenmerken, duur)-observatie en voedt
+    die aan model.update(), exact zoals een voltooid project. De ruwe
+    kenmerken worden daarbij automatisch gecentreerd rond de referentiewoning
+    (via BayesiaansFaseModel._naar_vector), net als bij echte projectdata.
 
     De drie-punts-schatting van dit ÉÉN scenario wordt eerst vertaald naar
     (mu, sigma) op log-schaal via dezelfde threepoint_to_lognormal() die ook
-    de fase-brede baseline_threepoint vertaalt. mu is de beste schatting van
-    log(duur) voor dit scenario; exp(mu) is dus de "geobserveerde duur" die
-    het model te zien krijgt.
+    de fase-brede baseline_threepoint vertaalt. mu = log(meest_waarschijnlijk),
+    dus exp(mu) — de "geobserveerde duur" die het model te zien krijgt — is
+    precies het meest-waarschijnlijke antwoord van de expert.
     """
     mu, _sigma_scenario = threepoint_to_lognormal(
         scenario["opt"], scenario["ml"], scenario["pess"]
     )
-    duur_scenario = np.exp(mu)
+    duur_scenario = float(np.exp(mu))
 
-    x = np.array([scenario["kenmerken"].get(naam, 0.0) for naam in covariate_namen])
-    model.update(x.reshape(1, -1), np.array([duur_scenario]))
+    model.update(duur_scenario, scenario["kenmerken"])
 
 
-def verwerk_alle_scenarios(pad_csv: str) -> dict[str, PhaseDurationModel]:
+def verwerk_alle_scenarios(pad_csv: str) -> dict[str, BayesiaansFaseModel]:
     """
     Leest het CSV-bestand en verwerkt, per fase, alle scenario's na elkaar
     door hetzelfde model. Retourneert het bijgewerkte model per fase.
@@ -206,9 +212,9 @@ def verwerk_alle_scenarios(pad_csv: str) -> dict[str, PhaseDurationModel]:
     bijgewerkte_modellen = {}
 
     for fase_code in FASE_INSTELLINGEN:
-        model, covariate_namen = bouw_fase_model(fase_code)
+        model = bouw_fase_model(fase_code)
         for scenario in scenarios_per_fase.get(fase_code, []):
-            verwerk_scenario(model, covariate_namen, scenario)
+            verwerk_scenario(model, scenario)
         bijgewerkte_modellen[fase_code] = model
 
         n = len(scenarios_per_fase.get(fase_code, []))
@@ -219,7 +225,7 @@ def verwerk_alle_scenarios(pad_csv: str) -> dict[str, PhaseDurationModel]:
     return bijgewerkte_modellen
 
 
-def print_vergelijking(bijgewerkte_modellen: dict[str, PhaseDurationModel]) -> None:
+def print_vergelijking(bijgewerkte_modellen: dict[str, BayesiaansFaseModel]) -> None:
     """Print per fase de prior naast de door scenario's bijgewerkte schatting,
     zodat je kunt zien hoeveel de interviews de prior hebben verschoven.
     Bij VLAKKE_PRIOR=True is de prior per definitie 0 (vlak) voor elke
@@ -236,10 +242,10 @@ def print_vergelijking(bijgewerkte_modellen: dict[str, PhaseDurationModel]) -> N
     for fase_code, model in bijgewerkte_modellen.items():
         config = FASE_INSTELLINGEN[fase_code]
         print(f"\n  Fase {fase_code}: {config['naam']}  "
-              f"(n_scenario's verwerkt: {model.n_obs})")
+              f"(n_scenario's verwerkt: {model.n_projecten})")
 
         samenvatting = model.coefficient_summary()
-        namen = ["intercept"] + model.covariate_names
+        namen = ["intercept"] + model.covariate_namen
         for naam in namen:
             if naam == "intercept":
                 prior_waarde = 1.0 if VLAKKE_PRIOR else np.exp(config["mu_0"])
@@ -267,7 +273,7 @@ def print_vergelijking(bijgewerkte_modellen: dict[str, PhaseDurationModel]) -> N
     print("\n" + "=" * breedte)
 
 
-def schrijf_python_blok(bijgewerkte_modellen: dict[str, PhaseDurationModel],
+def schrijf_python_blok(bijgewerkte_modellen: dict[str, BayesiaansFaseModel],
                         bestandsnaam: str = "elicitatie_geupdatete_instellingen.py") -> None:
     """
     Schrijft een los Python-bestand met de bijgewerkte mean/sd-waarden per
@@ -292,13 +298,13 @@ def schrijf_python_blok(bijgewerkte_modellen: dict[str, PhaseDurationModel],
     for fase_code, model in bijgewerkte_modellen.items():
         samenvatting = model.coefficient_summary()
         regels.append(f'    "{fase_code}": {{')
-        regels.append(f'        "n_scenarios": {model.n_obs},')
+        regels.append(f'        "n_scenarios": {model.n_projecten},')
         regels.append(f'        "mu_0_nieuw": np.log({np.exp(samenvatting["intercept"]["mean"]):.4f}),  '
                       f'# was {np.exp(FASE_INSTELLINGEN[fase_code]["mu_0"]):.1f}d')
         regels.append(f'        "sigma_nieuw": {model.sigma_estimate():.4f},  '
                       f'# was {SIGMA_LOG_PRIOR}')
         regels.append('        "factoren": {')
-        for naam in model.covariate_names:
+        for naam in model.covariate_namen:
             s = samenvatting[naam]
             regels.append(f'            "{naam}": {{"mean": {s["mean"]:.5f}, '
                           f'"sd": {s["sd"]:.5f}}},')

@@ -35,23 +35,30 @@ def threepoint_to_lognormal(optimistic: float, most_likely: float,
                             pessimistic: float,
                             coverage: float = 0.90) -> tuple[float, float]:
     """Translate an expert three-point duration estimate (in days) into
-    (mu, sigma) of a lognormal, treating [optimistic, pessimistic] as a
-    central `coverage` interval on the log scale and the most likely value
-    as the mode.
+    (mu, sigma) of a lognormal: the most likely value is treated as the
+    MEDIAN on the log scale (mu = log(most_likely)), and the width of
+    [optimistic, pessimistic] as a central `coverage` interval determines
+    sigma.
 
     Returns (mu, sigma) on the log scale.
 
     This is ONE possible translation rule. The thesis must justify and fix
     the rule explicitly (Section 4.4.2 promises this in Chapter 6). An
-    alternative is PERT-style moment matching; the interval rule used here
-    is more robust to experts anchoring on symmetric ranges.
+    alternative is PERT-style moment matching. Note the approximation: if
+    most_likely is not centred in [optimistic, pessimistic] on the log
+    scale, that range is not exactly a central `coverage` interval around
+    mu — only its WIDTH is used for sigma. (An earlier version used the
+    log-midpoint of [optimistic, pessimistic] as mu, which silently ignored
+    the expert's most-likely answer.)
     """
     if not (0 < optimistic <= most_likely <= pessimistic):
         raise ValueError("Require 0 < optimistic <= most_likely <= pessimistic")
+    if optimistic == pessimistic:
+        raise ValueError("Require optimistic < pessimistic (zero width gives "
+                         "a degenerate prior)")
     z = stats.norm.ppf(0.5 + coverage / 2.0)
-    lo, hi = np.log(optimistic), np.log(pessimistic)
-    sigma = (hi - lo) / (2.0 * z)
-    mu = (hi + lo) / 2.0
+    sigma = (np.log(pessimistic) - np.log(optimistic)) / (2.0 * z)
+    mu = np.log(most_likely)
     return mu, sigma
 
 
@@ -79,8 +86,12 @@ class PhaseDurationModel:
 
     Design vector convention: first element is the intercept (baseline
     log-duration beta_0f), followed by general covariates x_j, followed by
-    phase-specific covariates z_kf. Standardise covariates BEFORE elicitation
-    and modelling; the coefficient priors below assume standardised inputs.
+    phase-specific covariates z_kf. Covariates must be CENTRED on a fixed
+    reference project before entering this class (subtract the reference
+    value; see BayesiaansFaseModel._naar_vector in easicon_model_v2.py).
+    Coefficients are then per RAW unit (per m², per scale point, ...) and
+    the intercept is the log-duration of the reference project. Use the
+    same convention consistently for elicitation, updating and prediction.
     """
     phase: str
     covariate_names: list[str]              # excludes intercept
@@ -101,12 +112,12 @@ class PhaseDurationModel:
         """Initialise from elicited quantities.
 
         baseline_threepoint: (opt, ml, pess) duration in days for the
-            reference project (all standardised covariates = 0).
+            reference project (all centred covariates = 0).
         coef_prior_means/sds: per covariate, prior mean and sd of its effect
-            on LOG duration per 1 sd of the covariate. Derived from the
+            on LOG duration per RAW unit of the covariate. Derived from the
             paired-scenario elicitation (Sec. 4.4.2): if the comparison
             scenario is judged r times longer than baseline, the coefficient
-            mean is log(r) divided by the covariate step in sd units.
+            mean is log(r) divided by the covariate step in raw units.
         sigma_prior: point value for residual sigma (from spread question).
         sigma_confidence: pseudo-observations backing the sigma prior.
         """
@@ -146,11 +157,12 @@ class PhaseDurationModel:
         n = Phi.shape[0]
 
         V_inv = np.linalg.inv(self.V)
-        V_post = np.linalg.inv(V_inv + Phi.T @ Phi)
+        prec_post = V_inv + Phi.T @ Phi          # posterior precision (= V_post^-1)
+        V_post = np.linalg.inv(prec_post)
         m_post = V_post @ (V_inv @ self.m + Phi.T @ y)
         a_post = self.a + n / 2.0
         b_post = self.b + 0.5 * (y @ y + self.m @ V_inv @ self.m
-                                 - m_post @ np.linalg.inv(V_post) @ m_post)
+                                 - m_post @ prec_post @ m_post)
 
         self.m, self.V, self.a, self.b = m_post, V_post, a_post, b_post
         self.n_obs += n
