@@ -78,6 +78,32 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 # Na expert-interviews vervang je ALLEEN de waarden in dit blok.
 # ==============================================================================
 
+# --- Schakelaar: vlakke (niet-informatieve) prior i.p.v. literatuurwaarden ---
+# Zet dit op True om het model te laten starten met VRIJWEL 0 informatie:
+# alle coëfficiënten beginnen op 0 met een zeer brede onzekerheid, in plaats
+# van op de literatuurschattingen hieronder (BETA_GFA, schadegraad, etc.).
+# De literatuurwaarden in FASE_INSTELLINGEN blijven dan in de code staan,
+# maar worden GENEGEERD bij het bouwen van het model — ze dienen dan alleen
+# nog als leesbare documentatie/referentie, niet als startpunt.
+#
+# Waarom dit geen "0.0 sd" of "geen prior" kan zijn: de NIG-wiskunde in
+# estimation_module.py vereist een geldige (eindige) V-matrix en (a, b) om
+# de eerste update() te kunnen doen. "0 informatie" wordt hier daarom
+# benaderd met een extreem brede prior (VLAKKE_PRIOR_SD, VLAKKE_SIGMA_CONFIDENCE)
+# in plaats van een letterlijk oneindige — dat laatste is wiskundig ongedefinieerd.
+# Met deze instelling bepalen UITSLUITEND de expert-scenario's (via
+# elicitatie_verwerker.py) of latere projectdata waar de coëfficiënten landen.
+VLAKKE_PRIOR = True
+
+# Hoe breed de "ik weet niets"-prior is voor elke coëfficiënt (intercept en
+# covariaten). Groot genoeg om vrijwel geen informatie te dragen, maar klein
+# genoeg om numeriek stabiel te blijven.
+VLAKKE_PRIOR_SD = 10.0
+
+# Hoeveel "pseudo-projecten" de vlakke sigma-prior weegt: laag, zodat de
+# eerste paar scenario's/projecten de sigma-schatting al snel overnemen.
+VLAKKE_SIGMA_CONFIDENCE = 1.0
+
 # --- Observatieruis (nu een PRIOR, geen vaste waarde zoals in v1) ---
 # SIGMA_LOG_PRIOR = startpunt voor de schatting van sigma (std van log(duur)
 # tussen projecten van hetzelfde type). Elk model leert zijn eigen sigma bij
@@ -337,23 +363,45 @@ class BayesianesFaseModel:
             coef_prior_means[naam_f] = factor["mean"]
             coef_prior_sds[naam_f]   = factor["sd"]
 
-        # baseline_threepoint = (optimistisch, meest_waarschijnlijk, pessimistisch)
-        # meest_waarschijnlijk volgt uit mu_0 (dat al log(dagen) is).
-        opt, pess = fase_config["breedte_0"]
-        meest_waarschijnlijk = np.exp(fase_config["mu_0"])
+        if VLAKKE_PRIOR:
+            # "0 informatie"-modus: negeer de literatuurwaarden in
+            # FASE_INSTELLINGEN volledig. Alle coëfficiënten (intercept +
+            # covariaten) starten op 0 met een zeer brede onzekerheid, en
+            # sigma start op SIGMA_LOG_PRIOR maar met minimaal vertrouwen
+            # (VLAKKE_SIGMA_CONFIDENCE), zodat de eerste paar scenario's of
+            # projecten de schatting vrijwel volledig bepalen.
+            #
+            # We bouwen dit rechtstreeks op in NIG-vorm (m, V, a, b) in
+            # plaats van via from_elicitation(), omdat from_elicitation()
+            # een informatieve drie-punts-schatting als input verwacht — die
+            # willen we hier expliciet NIET gebruiken.
+            p = len(self.covariate_namen)
+            m0 = np.zeros(p + 1)                       # alles op 0: intercept + covariaten
+            V0 = np.eye(p + 1) * (VLAKKE_PRIOR_SD ** 2) # zeer brede onzekerheid
+            a0 = VLAKKE_SIGMA_CONFIDENCE / 2.0 + 1.0
+            b0 = SIGMA_LOG_PRIOR ** 2 * (a0 - 1.0)
+            self._model = PhaseDurationModel(
+                phase=code, covariate_names=self.covariate_namen,
+                m=m0, V=V0, a=a0, b=b0,
+            )
+        else:
+            # baseline_threepoint = (optimistisch, meest_waarschijnlijk, pessimistisch)
+            # meest_waarschijnlijk volgt uit mu_0 (dat al log(dagen) is).
+            opt, pess = fase_config["breedte_0"]
+            meest_waarschijnlijk = np.exp(fase_config["mu_0"])
 
-        # Bouw het onderliggende NIG-regressiemodel. Dit ene aanroep vervangt
-        # wat in v1 de losse mu_0/tau_0-velden deden: het legt tegelijk de
-        # prior voor intercept, ALLE covariaten, én sigma vast.
-        self._model = PhaseDurationModel.from_elicitation(
-            phase=code,
-            covariate_names=self.covariate_namen,
-            baseline_threepoint=(opt, meest_waarschijnlijk, pess),
-            coef_prior_means=coef_prior_means,
-            coef_prior_sds=coef_prior_sds,
-            sigma_prior=SIGMA_LOG_PRIOR,
-            sigma_confidence=SIGMA_CONFIDENCE,
-        )
+            # Bouw het onderliggende NIG-regressiemodel. Dit ene aanroep vervangt
+            # wat in v1 de losse mu_0/tau_0-velden deden: het legt tegelijk de
+            # prior voor intercept, ALLE covariaten, én sigma vast.
+            self._model = PhaseDurationModel.from_elicitation(
+                phase=code,
+                covariate_names=self.covariate_namen,
+                baseline_threepoint=(opt, meest_waarschijnlijk, pess),
+                coef_prior_means=coef_prior_means,
+                coef_prior_sds=coef_prior_sds,
+                sigma_prior=SIGMA_LOG_PRIOR,
+                sigma_confidence=SIGMA_CONFIDENCE,
+            )
 
         # Bewaar de prior-toestand apart zodat reset() niet opnieuw hoeft te
         # elicteren (en om precies te laten zien wat "voor" en "na" is).
@@ -620,14 +668,19 @@ def maak_convergentiegrafiek(modellen, n_projecten=100,
                         f"n={m}", fontsize=6, color="#888888", va="bottom")
 
         factoren = config.get("fase_specifieke_factoren", {})
-        cov_regels = [
-            f"GFA        prior β={BETA_GFA:.3f}/m²",
-            f"Verdiep.   prior β={BETA_VERDIEPINGEN:.3f}",
-            f"Hoogte     prior β={BETA_HOOGTE:.3f}/m",
-            "─────────────────",
-        ]
-        for naam_f, factor in factoren.items():
-            cov_regels.append(f"{naam_f:<16} prior β={factor['mean']:.3f}")
+        if VLAKKE_PRIOR:
+            cov_regels = ["VLAKKE PRIOR: alle β=0", "(literatuurwaarden genegeerd)",
+                         "─────────────────"]
+            cov_regels += [f"{naam_f:<16}" for naam_f in factoren]
+        else:
+            cov_regels = [
+                f"GFA        prior β={BETA_GFA:.3f}/m²",
+                f"Verdiep.   prior β={BETA_VERDIEPINGEN:.3f}",
+                f"Hoogte     prior β={BETA_HOOGTE:.3f}/m",
+                "─────────────────",
+            ]
+            for naam_f, factor in factoren.items():
+                cov_regels.append(f"{naam_f:<16} prior β={factor['mean']:.3f}")
         cov_tekst = "\n".join(cov_regels)
         ax.text(
             0.02, 0.98, cov_tekst,
@@ -810,24 +863,38 @@ def print_schattingstabel(modellen):
         print(f"  {fase_code:<5} {naam:<36} {v:>7.1f}d  [{l:>5.1f} - {u:>6.1f}d]")
         print(f"  {'':>5}  sigma (ruis, leert mee) = {model.sigma_estimate():.3f}")
 
-        print(f"  {'':>5}  ├─ Algemeen :  "
-              f"GFA prior β={BETA_GFA:.3f}/m²  |  "
-              f"Verdiep. prior β={BETA_VERDIEPINGEN:.2f}  |  "
-              f"Hoogte prior β={BETA_HOOGTE:.3f}/m")
+        if VLAKKE_PRIOR:
+            print(f"  {'':>5}  VLAKKE PRIOR actief: alle β=0, literatuurwaarden "
+                  f"hieronder zijn GENEGEERD.")
+            factoren = config.get("fase_specifieke_factoren", {})
+            print(f"  {'':>5}  Covariaten van deze fase: "
+                  f"GFA, verdiepingen, hoogte, {', '.join(factoren)}")
+        else:
+            print(f"  {'':>5}  ├─ Algemeen :  "
+                  f"GFA prior β={BETA_GFA:.3f}/m²  |  "
+                  f"Verdiep. prior β={BETA_VERDIEPINGEN:.2f}  |  "
+                  f"Hoogte prior β={BETA_HOOGTE:.3f}/m")
 
-        factoren = config.get("fase_specifieke_factoren", {})
-        items    = list(factoren.items())
-        for j, (naam_f, factor) in enumerate(items):
-            prefix = "  └─" if j == len(items) - 1 else "  ├─"
-            print(f"  {'':>5} {prefix} {naam_f:<22}  prior β = {factor['mean']:+.4f}"
-                  f"  (sd={factor['sd']:.4f})")
+            factoren = config.get("fase_specifieke_factoren", {})
+            items    = list(factoren.items())
+            for j, (naam_f, factor) in enumerate(items):
+                prefix = "  └─" if j == len(items) - 1 else "  ├─"
+                print(f"  {'':>5} {prefix} {naam_f:<22}  prior β = {factor['mean']:+.4f}"
+                      f"  (sd={factor['sd']:.4f})")
         print()
 
     print("-" * breedte)
-    print("  * Alle waarden zijn PLACEHOLDERS op basis van literatuurschattingen.")
-    print("    Vervang mu_0, breedte_0 en per-factor mean/sd na expert-interviews.")
-    print("    NIEUW t.o.v. v1: elke β hierboven is een startwaarde die met elk")
-    print("    voltooid project verder bijgesteld wordt (zie coefficient_summary()).")
+    if VLAKKE_PRIOR:
+        print("  * VLAKKE_PRIOR = True: het model start met vrijwel 0 informatie.")
+        print("    De literatuurwaarden in FASE_INSTELLINGEN worden genegeerd; alleen")
+        print("    expert-scenario's (elicitatie_verwerker.py) of echte projectdata")
+        print("    bepalen waar de coëfficiënten landen. Zet VLAKKE_PRIOR=False om")
+        print("    de literatuurwaarden weer als startpunt te gebruiken.")
+    else:
+        print("  * Alle waarden zijn PLACEHOLDERS op basis van literatuurschattingen.")
+        print("    Vervang mu_0, breedte_0 en per-factor mean/sd na expert-interviews.")
+        print("    NIEUW t.o.v. v1: elke β hierboven is een startwaarde die met elk")
+        print("    voltooid project verder bijgesteld wordt (zie coefficient_summary()).")
     print("=" * breedte)
 
 
